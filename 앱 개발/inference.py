@@ -12,6 +12,7 @@ JellyDay 추론 모듈 — 앱에서 실제로 쓰는 런타임 전용 코드.
     result = analyzer.analyze(ocr_names)   # OCR 결과 -> 식별/상호작용/위험도
 """
 
+import json
 import re
 import sqlite3
 import unicodedata
@@ -106,6 +107,56 @@ class FuzzyDrugMatcher:
         return scored[:self.top_k]
 
 
+class GeminiDrugMatcher:
+    """
+    DB(product_alias)로도, fuzzy 매칭으로도 식별 못한 항목의 마지막 폴백.
+    Gemini에게 '등록된 성분 목록'만 보여주고 그 중에서만 고르게 해 환각을 막는다.
+    (목록 밖 이름을 말해도 무시하고, 실패 시 조용히 unidentified로 남긴다.)
+    """
+
+    def __init__(self, api_key: str, ingredient_ids: List[str],
+                 model: str = 'gemini-2.5-flash'):
+        from google import genai  # pip install google-genai
+
+        self._client = genai.Client(api_key=api_key)
+        self._model = model
+        self._ingredient_ids = ingredient_ids
+
+    def match_batch(self, items: List[dict]) -> dict:
+        """[{'raw', 'fuzzy_candidates'}, ...] -> {raw: ingredient} (확신 없는 항목은 제외)."""
+        if not items:
+            return {}
+        lines = []
+        for it in items:
+            cand = ', '.join(c['ingredient'] for c in it['fuzzy_candidates']) or '없음'
+            lines.append(f"- {it['raw']!r} (유사 후보: {cand})")
+        prompt = (
+            "다음은 약봉투 사진 OCR로 읽었지만 자동으로 식별하지 못한 한국어 약품명입니다. "
+            "OCR 오인식(오타, 빠진 글자 등)이 있을 수 있습니다.\n\n"
+            + '\n'.join(lines) +
+            "\n\n아래 '등록된 성분 목록'에 있는 것 중 이 약이 확실하다고 판단되는 것만 "
+            "JSON 객체로 답하세요. 키는 위 항목의 원문 그대로, 값은 목록에 있는 성분명 그대로여야 합니다. "
+            "확신할 수 없으면 그 항목은 아예 결과에서 빼세요(추측 금지). "
+            '형식 예: {"타이레놀정500mg": "acetaminophen"}\n\n'
+            f"등록된 성분 목록: {', '.join(self._ingredient_ids)}"
+        )
+        try:
+            resp = self._client.models.generate_content(
+                model=self._model,
+                contents=prompt,
+                config={'response_mime_type': 'application/json'},
+            )
+            data = json.loads(resp.text)
+        except Exception as e:
+            print(f"[GeminiDrugMatcher] 실패, 폴백 없이 진행: {e}")
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        valid_raw = {it['raw'] for it in items}
+        ingset = set(self._ingredient_ids)
+        return {k: v for k, v in data.items() if k in valid_raw and v in ingset}
+
+
 class DDIEmbeddingModel(torch.nn.Module):
     """
     약물 임베딩 2개를 대칭 결합(합/절대차/곱)해 상호작용 위험도(0~1)를 예측.
@@ -167,7 +218,8 @@ class DrugAnalyzer:
     def __init__(self, conn: sqlite3.Connection,
                  fuzzy_threshold: float = 0.75,
                  fuzzy_top_k: int = 3,
-                 ddi_predictor: Optional[DDIRiskPredictor] = None):
+                 ddi_predictor: Optional[DDIRiskPredictor] = None,
+                 llm_matcher: Optional[GeminiDrugMatcher] = None):
         self.conn = conn
         self.normalizer = DrugNameNormalizer()
         self.fuzzy = FuzzyDrugMatcher(
@@ -177,6 +229,8 @@ class DrugAnalyzer:
         )
         # DB에 없는 미등록 약물 조합의 위험도를 추정하는 학습된 임베딩 모델(선택).
         self.ddi_predictor = ddi_predictor
+        # DB·fuzzy로도 식별 못한 항목의 마지막 폴백(선택, GEMINI_API_KEY 있을 때만).
+        self.llm_matcher = llm_matcher
 
     def lookup(self, norm: str) -> Optional[str]:
         row = self.conn.execute(
@@ -263,6 +317,21 @@ class DrugAnalyzer:
                         'fuzzy_candidates': candidates,
                     })
 
+        if self.llm_matcher is not None and unidentified:
+            hits = self.llm_matcher.match_batch(unidentified)
+            if hits:
+                still_unidentified = []
+                for item in unidentified:
+                    ingredient = hits.get(item['raw'])
+                    if ingredient:
+                        info = self.get_info(ingredient)
+                        info['llm_matched'] = True
+                        identified[item['raw']] = info
+                        print(f"[GeminiDrugMatcher] '{item['raw']}' -> '{ingredient}'")
+                    else:
+                        still_unidentified.append(item)
+                unidentified = still_unidentified
+
         ids = [v['id'] for v in identified.values() if v]
         inters = self.check_interactions(ids)
         risk = self._risk(identified, inters)
@@ -283,13 +352,18 @@ class DrugAnalyzer:
         return min(max(inter_score + poly, 1.0 if contraindicated else 0.0), 1.0)
 
 
-def load_pipeline(db_path: str, ddi_model_path: Optional[str] = None) -> DrugAnalyzer:
+def load_pipeline(db_path: str, ddi_model_path: Optional[str] = None,
+                   gemini_api_key: Optional[str] = None) -> DrugAnalyzer:
     """
     이미 만들어진 drug_data.db(+ 선택적으로 ddi_model.pt)를 불러와
     바로 쓸 수 있는 DrugAnalyzer를 반환한다. 앱에서는 이 함수 하나만 부르면 된다.
+    gemini_api_key를 주면 DB·fuzzy로 식별 못한 항목을 Gemini로 한 번 더 시도한다.
     """
     conn = sqlite3.connect(db_path, check_same_thread=False)
     analyzer = DrugAnalyzer(conn)
     if ddi_model_path:
         analyzer.ddi_predictor = DDIRiskPredictor.load(ddi_model_path)
+    if gemini_api_key:
+        ingredient_ids = [r[0] for r in conn.execute("SELECT ingredient FROM ingredients")]
+        analyzer.llm_matcher = GeminiDrugMatcher(gemini_api_key, ingredient_ids)
     return analyzer

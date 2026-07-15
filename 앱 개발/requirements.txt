@@ -15,3 +15,7 @@ rapidfuzz
 easyocr
 pillow
 numpy
+
+# 선택: GEMINI_API_KEY 환경변수를 설정하면, DB·fuzzy로 식별 못한 약을
+# Gemini로 한 번 더 시도한다 (없어도 기존 동작 그대로 동작).
+google-genai

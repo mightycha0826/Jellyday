@@ -22,3 +22,9 @@ Gradio REST 2-step 호출:
 응답: `{ identified, unidentified, interactions, drug_risk_score, per_item_names }`
 
 `analyze_names` 엔드포인트는 OCR 없이 약품명만으로 테스트할 때 사용.
+
+## 환경변수
+- `DRUG_DB` (기본 `drug_data.db`), `DDI_MODEL` (기본 `ddi_model.pt`)
+- `GEMINI_API_KEY` — 설정하면 DB·fuzzy로도 식별 못한 약을 Gemini로 한 번 더 시도한다
+  (등록된 성분 목록 중에서만 고르게 해 환각을 제한). HF Spaces라면 Settings > Repository secrets에 등록.
+  없으면 기존 동작(DB + fuzzy 매칭)만 그대로 동작한다.

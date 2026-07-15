@@ -25,9 +25,15 @@ from inference import DrugNameNormalizer, load_pipeline
 
 DB_PATH = os.getenv("DRUG_DB", "drug_data.db")
 MODEL_PATH = os.getenv("DDI_MODEL", "ddi_model.pt")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # 있으면 미식별 항목 폴백 매칭에 사용
 
 # ddi_model.pt가 있으면 DB 미등록 조합도 추정, 없으면 DB 조회만
-analyzer = load_pipeline(DB_PATH, MODEL_PATH if os.path.exists(MODEL_PATH) else None)
+# GEMINI_API_KEY가 있으면 DB·fuzzy로 못 찾은 약도 Gemini로 한 번 더 시도
+analyzer = load_pipeline(
+    DB_PATH,
+    MODEL_PATH if os.path.exists(MODEL_PATH) else None,
+    GEMINI_API_KEY,
+)
 
 app = FastAPI(title="JellyDay DDI API", version="1.0")
 

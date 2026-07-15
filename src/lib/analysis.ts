@@ -14,6 +14,7 @@ export interface IdentifiedInfo {
 	fuzzy_matched?: boolean;
 	match_score?: number;
 	matched_alias?: string;
+	llm_matched?: boolean; // DB·fuzzy로 못 찾아 Gemini로 폴백 매칭된 경우
 }
 
 /** 성분쌍 상호작용 1건 */

@@ -458,7 +458,13 @@
 					</span>
 					<span class="mi">
 						<span class="mn">{raw}</span>
-						<span class="ms">{doseHint(info)}{info.fuzzy_matched ? ' · 유사 매칭' : ''}</span>
+						<span class="ms"
+							>{doseHint(info)}{info.llm_matched
+								? ' · AI 추정'
+								: info.fuzzy_matched
+									? ' · 유사 매칭'
+									: ''}</span
+						>
 					</span>
 				</button>
 			{/each}
