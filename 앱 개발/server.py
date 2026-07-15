@@ -77,12 +77,52 @@ _reader = None
 _norm = DrugNameNormalizer()
 
 
+def _patch_no_pin_memory():
+    """
+    ZeroGPU: torch가 CUDA 빌드라 CUDA가 '보이지만' 실제 GPU가 미할당(CPU 실행)이면,
+    easyocr 내부 DataLoader의 pin_memory 가 "No CUDA GPUs are available"로 터진다.
+    → 모든 DataLoader의 pin_memory 를 강제로 끈다 (CPU 추론이라 성능 영향 없음).
+    """
+    import torch.utils.data as tud
+
+    if getattr(tud.DataLoader, "_pin_patched", False):
+        return
+    _orig = tud.DataLoader.__init__
+
+    def _init(self, *args, **kwargs):
+        kwargs["pin_memory"] = False
+        _orig(self, *args, **kwargs)
+
+    tud.DataLoader.__init__ = _init
+    tud.DataLoader._pin_patched = True
+
+
 def _get_reader():
     global _reader
     if _reader is None:
         import easyocr  # pip install easyocr (torch 재사용, 한글+영문)
+
+        _patch_no_pin_memory()
         _reader = easyocr.Reader(["ko", "en"], gpu=False)
     return _reader
+
+
+def _preprocess(img):
+    """
+    약봉투 OCR 정확도용 전처리.
+      - 그레이스케일: 배경 색/무늬 영향 제거
+      - autocontrast: 반사광·저대비로 흐려진 글자의 명암을 넓게 편다 (가장 큰 효과)
+      - 업스케일: 글씨가 작으면 키워서 인식 (긴 변 기준 최소 1400px)
+    """
+    from PIL import Image, ImageOps
+
+    img = img.convert("L")
+    img = ImageOps.autocontrast(img, cutoff=1)
+    long_side = max(img.size)
+    if long_side < 1400:
+        s = 1400 / long_side
+        img = img.resize((round(img.width * s), round(img.height * s)), Image.LANCZOS)
+    return img.convert("RGB")  # readtext 호환(3채널)
 
 
 def _ocr(image_b64: str) -> list[str]:
@@ -93,8 +133,18 @@ def _ocr(image_b64: str) -> list[str]:
     from PIL import Image
 
     raw = image_b64.split(",", 1)[-1]  # data URL 접두어 제거
-    img = Image.open(io.BytesIO(base64.b64decode(raw))).convert("RGB")
-    return _get_reader().readtext(np.array(img), detail=0, paragraph=False)
+    img = Image.open(io.BytesIO(base64.b64decode(raw)))
+    img = _preprocess(img)
+    return _get_reader().readtext(
+        np.array(img),
+        detail=0,
+        paragraph=False,
+        mag_ratio=1.5,       # 작은 글씨를 확대해 검출
+        contrast_ths=0.05,   # 저대비 영역은 대비를 조정해 재인식
+        adjust_contrast=0.7,
+        text_threshold=0.6,  # 텍스트 검출 문턱 낮춤 (기본 0.7)
+        low_text=0.3,        # 흐린 글자 경계까지 포함 (기본 0.4)
+    )
 
 
 def _vote_burst(images: list[str]) -> list[str]:

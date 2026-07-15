@@ -19,7 +19,15 @@ import spaces
 from server import analyzer, _vote_burst, _get_reader
 
 
-@spaces.GPU(duration=120)
+# ZeroGPU 시작 요건(@spaces.GPU 함수가 1개 이상 "존재")만 충족하는 최소 함수.
+# 실제 분석은 CPU(easyocr gpu=False)로 충분한데, @spaces.GPU 안에서 무거운 OCR을
+# 돌리면 최대 실행시간 제한("ZeroGPU illegal duration")에 걸려 매번 실패한다.
+# → 그래서 analyze 함수에는 데코레이터를 달지 않고 CPU에서(시간 제한 없이) 돌린다.
+@spaces.GPU(duration=10)
+def _gpu_probe():
+    return True
+
+
 def analyze_images_fn(items):
     """약별 버스트 목록 → 약마다 다수결 OCR → 전체 합쳐 analyze()."""
     try:
@@ -31,15 +39,23 @@ def analyze_images_fn(items):
             "interactions": [], "drug_risk_score": 0.0, "per_item_names": [],
         }
 
-    per_item, all_names = [], []
-    for item in (items or []):
-        names = _vote_burst(item.get("images", []))
-        per_item.append(names)
-        all_names.extend(names)
-
-    result = analyzer.analyze(all_names)
-    result["per_item_names"] = per_item  # 약별 인식 결과(디버그/확인용)
-    return result
+    try:
+        per_item, all_names = [], []
+        for item in (items or []):
+            names = _vote_burst(item.get("images", []))
+            per_item.append(names)
+            all_names.extend(names)
+        result = analyzer.analyze(all_names)
+        result["per_item_names"] = per_item  # 약별 인식 결과(디버그/확인용)
+        return result
+    except Exception as e:  # 원인 파악 위해 에러를 응답에 실어 보낸다 (크래시 방지 겸용)
+        import traceback
+        return {
+            "error": f"{type(e).__name__}: {e}",
+            "trace": traceback.format_exc()[-1500:],
+            "identified": {}, "unidentified": [],
+            "interactions": [], "drug_risk_score": 0.0, "per_item_names": [],
+        }
 
 
 def analyze_names_fn(names_text):

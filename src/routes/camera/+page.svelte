@@ -21,6 +21,13 @@
 	let facing = $state<'environment' | 'user'>('environment');
 	let flash = $state(false); // 촬영 피드백
 	let fileInput: HTMLInputElement | undefined = $state(); // 갤러리 선택용 input
+	let rotate = $state(0); // 0 | 90 | 180 | 270 — 촬영 방향(가로/세로)
+	let camW = $state(0);
+	let camH = $state(0);
+	// 90/270도 회전 시 프리뷰가 화면을 꽉 채우도록 확대 비율
+	const coverScale = $derived(
+		rotate % 180 === 0 || !camW || !camH ? 1 : Math.max(camW, camH) / Math.min(camW, camH)
+	);
 
 	// shoot: 촬영 중 / choice: 완료 후 선택 / analyzing·result·failed: 결과 시트
 	let phase = $state<'shoot' | 'choice' | 'analyzing' | 'result' | 'failed'>('shoot');
@@ -51,7 +58,12 @@
 		denied = false;
 		try {
 			stream = await navigator.mediaDevices.getUserMedia({
-				video: { facingMode: facing },
+				video: {
+					facingMode: { ideal: facing },
+					// 고해상도 요청 — 지원 범위 내에서 최대한 크게 (ideal 이라 없으면 자동 하향)
+					width: { ideal: 2560 },
+					height: { ideal: 1440 }
+				},
 				audio: false
 			});
 			if (videoEl) {
@@ -73,33 +85,71 @@
 		return stop;
 	});
 
+	// 캡처 공통: 소스를 긴 변 최대 2560px, JPEG 0.92 로 그려 dataURL 생성
+	// (해상도를 크게 확보하되 업로드/처리 크기는 합리적으로 — OCR엔 2560이면 충분)
+	const MAX_LONG = 2560;
+	function drawToDataUrl(src: CanvasImageSource, w: number, h: number, rot = 0): string {
+		const scale = Math.min(1, MAX_LONG / Math.max(w, h));
+		const sw = Math.max(1, Math.round(w * scale));
+		const sh = Math.max(1, Math.round(h * scale));
+		const swap = rot % 180 !== 0; // 90/270도는 가로·세로가 바뀜
+		const c = document.createElement('canvas');
+		c.width = swap ? sh : sw;
+		c.height = swap ? sw : sh;
+		const ctx = c.getContext('2d')!;
+		ctx.translate(c.width / 2, c.height / 2);
+		ctx.rotate((rot * Math.PI) / 180);
+		ctx.drawImage(src, -sw / 2, -sh / 2, sw, sh);
+		return c.toDataURL('image/jpeg', 0.92);
+	}
+	function blip() {
+		flash = true;
+		setTimeout(() => (flash = false), 140);
+	}
+
 	// 갤러리에서 사진 선택 — 촬영과 동일하게 현재 약(shots)에 추가
 	function pickImage() {
 		fileInput?.click();
 	}
 	function onPickFile(e: Event) {
 		const input = e.currentTarget as HTMLInputElement;
-		const files = Array.from(input.files ?? []);
-		for (const file of files) {
-			const reader = new FileReader();
-			reader.onload = () => {
-				if (typeof reader.result === 'string') shots = [...shots, reader.result];
+		for (const file of Array.from(input.files ?? [])) {
+			const url = URL.createObjectURL(file);
+			const img = new Image();
+			img.onload = () => {
+				shots = [...shots, drawToDataUrl(img, img.naturalWidth, img.naturalHeight)];
+				URL.revokeObjectURL(url);
 			};
-			reader.readAsDataURL(file);
+			img.src = url;
 		}
 		input.value = ''; // 같은 파일을 다시 선택할 수 있도록 초기화
 	}
 
 	// 셔터 — 현재 약에 사진 한 장 추가
-	function shoot() {
-		if (!videoEl || !ready) return;
-		const c = document.createElement('canvas');
-		c.width = videoEl.videoWidth;
-		c.height = videoEl.videoHeight;
-		c.getContext('2d')!.drawImage(videoEl, 0, 0);
-		shots = [...shots, c.toDataURL('image/jpeg', 0.85)];
-		flash = true;
-		setTimeout(() => (flash = false), 140);
+	async function shoot() {
+		if (!ready) return;
+		const track = stream?.getVideoTracks()[0];
+		// 1) ImageCapture: 카메라 센서의 최대 해상도로 스틸 촬영 (프리뷰보다 훨씬 선명).
+		//    Chrome/Android 지원. 실패하거나 미지원(iOS)이면 아래 폴백.
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const IC = (globalThis as any).ImageCapture;
+		if (track && IC) {
+			try {
+				const blob: Blob = await new IC(track).takePhoto();
+				const bmp = await createImageBitmap(blob);
+				shots = [...shots, drawToDataUrl(bmp, bmp.width, bmp.height, rotate)];
+				bmp.close();
+				blip();
+				return;
+			} catch {
+				/* 폴백으로 진행 */
+			}
+		}
+		// 2) 폴백: 고해상도 비디오 프레임 캡처 (iOS 등)
+		if (videoEl?.videoWidth) {
+			shots = [...shots, drawToDataUrl(videoEl, videoEl.videoWidth, videoEl.videoHeight, rotate)];
+			blip();
+		}
 	}
 
 	// [완료] — 현재 약 촬영 종료 → 선택 단계
@@ -219,9 +269,15 @@
 
 </script>
 
-<div class="cam">
+<div class="cam" bind:clientWidth={camW} bind:clientHeight={camH}>
 	<!-- svelte-ignore a11y_media_has_caption -->
-	<video class="feed" bind:this={videoEl} playsinline muted></video>
+	<video
+		class="feed"
+		bind:this={videoEl}
+		playsinline
+		muted
+		style="transform: rotate({rotate}deg) scale({coverScale});"
+	></video>
 	{#if flash}<div class="flash" aria-hidden="true"></div>{/if}
 
 	{#if denied}
@@ -241,6 +297,16 @@
 	<button class="back" onclick={() => goto('/')} aria-label="뒤로가기">
 		<svg viewBox="0 0 24 24"><path d="M15 5.5 8.5 12l6.5 6.5" /></svg>
 	</button>
+
+	{#if phase === 'shoot' && !denied}
+		<button
+			class="rotate"
+			onclick={() => (rotate = (rotate + 90) % 360)}
+			aria-label="촬영 방향 회전 (가로/세로)"
+		>
+			<svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4" /><path d="M21 4v5h-5" /></svg>
+		</button>
+	{/if}
 
 	<!-- 진행 상태 -->
 	{#if bursts.length > 0 && phase !== 'result'}
@@ -456,6 +522,8 @@
 		width: 100%;
 		height: 100%;
 		object-fit: cover;
+		transform-origin: center;
+		transition: transform 0.3s ease;
 	}
 	.flash {
 		position: absolute;
@@ -540,7 +608,8 @@
 		display: grid;
 		place-items: center;
 	}
-	.back svg {
+	.back svg,
+	.rotate svg {
 		width: 22px;
 		height: 22px;
 		fill: none;
@@ -548,6 +617,22 @@
 		stroke-width: 2.2;
 		stroke-linecap: round;
 		stroke-linejoin: round;
+	}
+	.rotate {
+		position: absolute;
+		top: calc(env(safe-area-inset-top) + 14px);
+		right: 14px;
+		width: 42px;
+		height: 42px;
+		border-radius: 50%;
+		background: rgba(16, 19, 24, 0.5);
+		backdrop-filter: blur(8px);
+		color: #fff;
+		display: grid;
+		place-items: center;
+	}
+	.rotate:active {
+		background: rgba(16, 19, 24, 0.8);
 	}
 
 	.progress {
