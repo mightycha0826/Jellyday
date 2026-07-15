@@ -15,6 +15,7 @@ JellyDay DDI API — inference.py를 HTTP로 노출하는 얇은 래퍼.
 """
 
 import os
+import re
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -107,21 +108,63 @@ def _get_reader():
     return _reader
 
 
+# 약봉투 OCR 잡음 필터 — 처방전 메타데이터(번호/날짜/페이지/약물코드)는
+# 약 이름이 아니므로 analyze() 에 보내지 않는다. 안전 위주(오탐 시 실제
+# 약 이름을 놓칠 수 있는 규칙은 넣지 않음 — 예: 순수 한글 이름 줄은 제외 안 함).
+_NOISE_PATTERNS = [
+    re.compile(r"처방|접수"),                      # "처방 : 26-04-21" 등 라벨
+    re.compile(r"^\d{1,3}\s*/\s*\d{1,3}$"),         # 페이지 번호 "2/5"
+    re.compile(r"^\d{2}[-.]\d{2}[-.]\d{2}(\s+\d{1,2}:\d{2}(:\d{2})?)?$"),  # 날짜/시각
+    re.compile(r"^[A-Za-z0-9]+[-:.][A-Za-z0-9]+([-:.][A-Za-z0-9]+)?$"),  # "DIA-2339", "071-7113:D"(OCR이 :→.로 오독하기도 함)
+    re.compile(r"^[A-Z]{2,6}$"),                    # 순수 영문 코드 "ATC","DACTC","DLTRA"
+]
+
+
+def _is_noise_line(raw: str) -> bool:
+    s = raw.strip()
+    return any(p.search(s) for p in _NOISE_PATTERNS)
+
+
+# 약봉투 한 줄에 "코드  상품명 용량 개수 횟수"가 함께 붙어 나오는 경우
+# (예: "DULTRA   울트라셋정 37.5/325mg ta 1  3  1") 앞의 코드가 그대로 남으면
+# inference.py 의 fuzzy 매칭이 전체 문자열 유사도(SequenceMatcher/token_sort_ratio)를
+# 쓰기 때문에 실제 상품명("울트라셋")과의 유사도가 떨어져 매칭에 실패한다.
+# → 우리 쪽에서 앞의 코드 토큰만 잘라내 순수 상품명 위주로 넘긴다.
+_LEADING_CODE = re.compile(r"^[A-Z]{2,8}\s{1,}(?=\S)")
+
+
+def _strip_leading_code(s: str) -> str:
+    return _LEADING_CODE.sub("", s, count=1)
+
+
+# 용량/용법 꼬리(예: "37.5/325mg ta 1  3  1")가 남으면 inference.py의 normalize()가
+# 숫자와 정/mg 등은 지워도 "/"나 "ta"(정제 약어, FORM 목록에 없음) 같은 잔여 기호는
+# 남겨, 짧은 상품명 대비 전체 문자열 유사도가 떨어져 fuzzy 매칭이 실패한다.
+# → 상품명 뒤에 숫자나 "/"가 처음 나오는 지점에서 잘라 순수 이름만 남긴다.
+_DOSE_TAIL = re.compile(r"\s*[\d/].*$")
+
+
+def _strip_dose_tail(s: str) -> str:
+    return _DOSE_TAIL.sub("", s).strip()
+
+
 def _preprocess(img):
     """
     약봉투 OCR 정확도용 전처리.
       - 그레이스케일: 배경 색/무늬 영향 제거
       - autocontrast: 반사광·저대비로 흐려진 글자의 명암을 넓게 편다 (가장 큰 효과)
-      - 업스케일: 글씨가 작으면 키워서 인식 (긴 변 기준 최소 1400px)
+      - 업스케일: 글씨가 작으면 키워서 인식 (긴 변 기준 최소 1600px)
+      - unsharp mask: 작은 한글 글자의 획 경계를 또렷하게 해 검출 누락을 줄인다
     """
-    from PIL import Image, ImageOps
+    from PIL import Image, ImageFilter, ImageOps
 
     img = img.convert("L")
     img = ImageOps.autocontrast(img, cutoff=1)
     long_side = max(img.size)
-    if long_side < 1400:
-        s = 1400 / long_side
+    if long_side < 1600:
+        s = 1600 / long_side
         img = img.resize((round(img.width * s), round(img.height * s)), Image.LANCZOS)
+    img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=2))
     return img.convert("RGB")  # readtext 호환(3채널)
 
 
@@ -135,16 +178,20 @@ def _ocr(image_b64: str) -> list[str]:
     raw = image_b64.split(",", 1)[-1]  # data URL 접두어 제거
     img = Image.open(io.BytesIO(base64.b64decode(raw)))
     img = _preprocess(img)
-    return _get_reader().readtext(
+    lines = _get_reader().readtext(
         np.array(img),
         detail=0,
         paragraph=False,
-        mag_ratio=1.5,       # 작은 글씨를 확대해 검출
-        contrast_ths=0.05,   # 저대비 영역은 대비를 조정해 재인식
+        mag_ratio=1.8,        # 작은 글씨를 확대해 검출
+        contrast_ths=0.05,    # 저대비 영역은 대비를 조정해 재인식
         adjust_contrast=0.7,
-        text_threshold=0.6,  # 텍스트 검출 문턱 낮춤 (기본 0.7)
-        low_text=0.3,        # 흐린 글자 경계까지 포함 (기본 0.4)
+        text_threshold=0.5,   # 텍스트 검출 문턱 더 낮춤 (기본 0.7) — 흐린 줄 누락 방지
+        low_text=0.25,        # 흐린 글자 경계까지 포함 (기본 0.4)
+        link_threshold=0.35,  # 한글+영문+숫자가 섞인 줄을 하나로 잘 이어붙이도록 (기본 0.4)
     )
+    lines = [ln for ln in lines if not _is_noise_line(ln)]
+    lines = [_strip_dose_tail(_strip_leading_code(ln)) for ln in lines]
+    return [ln for ln in lines if ln]
 
 
 def _vote_burst(images: list[str]) -> list[str]:

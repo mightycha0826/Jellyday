@@ -2,7 +2,7 @@
 	import { goto } from '$app/navigation';
 	import BottomSheet from '$lib/components/BottomSheet.svelte';
 	import Icon from '$lib/components/Icon.svelte';
-	import { saveMed, toast } from '$lib/state.svelte';
+	import { UI, saveMed, toast } from '$lib/state.svelte';
 	import { SLOTS, MED_COLORS, dateKey, todayKey } from '$lib/utils';
 	import {
 		analyzeImages,
@@ -212,6 +212,15 @@
 	}
 	function toggleSlot(id: string) {
 		slots = slots.includes(id) ? slots.filter((s) => s !== id) : [...slots, id];
+	}
+
+	// DB엔 없지만 OCR로 읽힌 약 이름 — 이름을 채운 채로 직접 추가 폼을 연다.
+	// 결과 시트는 그대로 열어 둔다(닫으면 reset() 이펙트가 다른 식별 결과까지 지움).
+	// MedicationForm은 레이아웃에서 이후에 렌더되어 항상 위에 겹쳐 뜬다.
+	function addUnidentified(raw: string) {
+		UI.presetName = raw;
+		UI.editingMed = null;
+		UI.medFormOpen = true;
 	}
 
 	const entries = $derived<[string, IdentifiedInfo][]>(
@@ -460,13 +469,16 @@
 			<div class="unk">
 				{#each result.unidentified as u (u.raw)}
 					<div class="unk-row">
-						<span class="unk-name">{u.raw}</span>
-						{#if u.fuzzy_candidates.length > 0}
-							<span class="unk-guess">혹시 {u.fuzzy_candidates[0].alias}?</span>
-						{/if}
+						<span class="unk-info">
+							<span class="unk-name">{u.raw}</span>
+							{#if u.fuzzy_candidates.length > 0}
+								<span class="unk-guess">혹시 {u.fuzzy_candidates[0].alias}?</span>
+							{/if}
+						</span>
+						<button class="unk-add" onclick={() => addUnidentified(u.raw)}>+ 추가</button>
 					</div>
 				{/each}
-				<p class="unk-note">정확한 이름은 직접 추가할 수 있어요.</p>
+				<p class="unk-note">이름을 눌러 추가하면 직접 입력 폼에 채워져요.</p>
 			</div>
 		{/if}
 
@@ -1019,10 +1031,15 @@
 	}
 	.unk-row {
 		display: flex;
-		align-items: baseline;
+		align-items: center;
 		justify-content: space-between;
 		gap: 10px;
-		padding: 4px 0;
+		padding: 6px 0;
+	}
+	.unk-info {
+		display: flex;
+		flex-direction: column;
+		min-width: 0;
 	}
 	.unk-name {
 		font-size: 14px;
@@ -1030,9 +1047,22 @@
 		color: var(--text-2);
 	}
 	.unk-guess {
-		font-size: 13px;
+		font-size: 12px;
 		color: var(--blue);
+		margin-top: 1px;
+	}
+	.unk-add {
 		flex: none;
+		font-size: 13px;
+		font-weight: 700;
+		color: var(--blue);
+		background: var(--blue-soft);
+		border-radius: 999px;
+		padding: 6px 12px;
+	}
+	.unk-add:active {
+		background: var(--blue);
+		color: #fff;
 	}
 	.unk-note {
 		font-size: 12px;
