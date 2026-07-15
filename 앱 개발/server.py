@@ -14,6 +14,7 @@ JellyDay DDI API — inference.py를 HTTP로 노출하는 얇은 래퍼.
          -d '{"names": ["타이레놀정", "아모크라정"]}'
 """
 
+import json
 import os
 import re
 
@@ -127,7 +128,6 @@ def _gemini_read_burst(images: list[str]) -> list[str] | None:
         return None
 
     import base64
-    import json
 
     from google.genai import types
 
@@ -148,14 +148,19 @@ def _gemini_read_burst(images: list[str]) -> list[str] | None:
     )
     global _last_gemini_error, _gemini_model_ok
     for model in _candidate_models():
+        resp = None
         try:
             resp = client.models.generate_content(
                 model=model,
                 contents=parts + [prompt],
-                config={"response_mime_type": "application/json"},
+                config={
+                    "response_mime_type": "application/json",
+                    "response_schema": list[str],  # 모델이 배열 형태를 벗어나지 못하게 강제
+                },
             )
-            names = json.loads(resp.text)
-            if isinstance(names, list):
+            raw_text = resp.text  # 안전필터 차단 등으로 여기서도 예외가 날 수 있음
+            names = _parse_json_array(raw_text)
+            if names is not None:
                 _last_gemini_error = None
                 if _gemini_model_ok != model:
                     _gemini_model_ok = model
@@ -164,12 +169,42 @@ def _gemini_read_burst(images: list[str]) -> list[str] | None:
                     if analyzer.llm_matcher is not None:
                         analyzer.llm_matcher.model = model
                 return [str(n).strip() for n in names if str(n).strip()]
-            _last_gemini_error = f"unexpected response: {resp.text[:200]}"
+            _last_gemini_error = f"unexpected response: {raw_text[:300]!r}"
         except Exception as e:
-            _last_gemini_error = f"{type(e).__name__}: {e}"
+            try:
+                snippet = f" | raw={resp.text[:300]!r}" if resp is not None else ""
+            except Exception:
+                snippet = ""  # resp.text 접근 자체가 실패(예: 안전필터 차단)
+            _last_gemini_error = f"{type(e).__name__}: {e}{snippet}"
             print(f"[GeminiOCR] {model} 실패: {_last_gemini_error}")
             if "404" not in str(e) and "NOT_FOUND" not in str(e):
                 break  # 모델 없음(404)만 다음 후보 시도, 그 외(쿼터 등)는 중단
+    return None
+
+
+def _parse_json_array(text: str) -> list | None:
+    """
+    response_schema로 배열을 강제해도 가끔 코드펜스(```json ... ```)나 앞뒤
+    잡설이 섞여 곧바로 json.loads가 실패하는 경우가 있다 — 흔한 변형을 몇 가지
+    더 시도해보고, 그래도 안 되면 None(에러 메시지에 원문을 남겨 다음에
+    바로 원인을 볼 수 있게 함).
+    """
+    if not text:
+        return None
+    candidates = [text.strip()]
+    fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
+    if fenced:
+        candidates.append(fenced.group(1).strip())
+    bracketed = re.search(r"\[.*\]", text, re.S)
+    if bracketed:
+        candidates.append(bracketed.group(0))
+    for cand in candidates:
+        try:
+            data = json.loads(cand)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, list):
+            return data
     return None
 
 
