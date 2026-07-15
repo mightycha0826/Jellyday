@@ -30,4 +30,5 @@ Gradio REST 2-step 호출:
   (2) DB·fuzzy로도 식별 못한 약을 Gemini로 한 번 더 성분 매칭한다
   (등록된 성분 목록 중에서만 고르게 해 환각을 제한).
   HF Spaces라면 Settings > Repository secrets에 등록. 없으면 기존 동작(EasyOCR + DB/fuzzy)으로 동작.
-- `GEMINI_OCR_MODEL` — 비전 OCR에 쓸 모델 (기본 `gemini-2.5-flash`)
+- `GEMINI_OCR_MODEL` — 비전 OCR에 쓸 모델 (기본: `gemini-flash-latest`,
+  404 시 키로 사용 가능한 flash 모델을 자동 탐색)

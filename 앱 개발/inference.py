@@ -115,11 +115,11 @@ class GeminiDrugMatcher:
     """
 
     def __init__(self, api_key: str, ingredient_ids: List[str],
-                 model: str = 'gemini-2.5-flash'):
+                 model: str = 'gemini-flash-latest'):
         from google import genai  # pip install google-genai
 
         self._client = genai.Client(api_key=api_key)
-        self._model = model
+        self.model = model  # server.py가 실제 동작 확인된 모델로 갱신할 수 있음
         self._ingredient_ids = ingredient_ids
 
     def match_batch(self, items: List[dict]) -> dict:
@@ -142,7 +142,7 @@ class GeminiDrugMatcher:
         )
         try:
             resp = self._client.models.generate_content(
-                model=self._model,
+                model=self.model,
                 contents=prompt,
                 config={'response_mime_type': 'application/json'},
             )

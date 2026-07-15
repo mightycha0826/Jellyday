@@ -81,6 +81,7 @@ def analyze(req: AnalyzeRequest):
 # (한글 약봉투 인식률이 EasyOCR보다 훨씬 높음). 없거나 실패하면 EasyOCR 폴백.
 _gemini_client = None
 _last_gemini_error: str | None = None  # 마지막 Gemini 호출 실패 원인 (진단용)
+_gemini_model_ok: str | None = None    # 한 번 성공한 모델명 캐시
 
 
 def _get_gemini():
@@ -90,6 +91,30 @@ def _get_gemini():
 
         _gemini_client = genai.Client(api_key=GEMINI_API_KEY)
     return _gemini_client
+
+
+def _candidate_models() -> list[str]:
+    """
+    시도할 모델명 후보. 구모델이 신규 키에서 404 나는 문제(예: gemini-2.5-flash
+    'no longer available to new users') 대응 — 최신 별칭을 먼저 쓰고,
+    안 되면 이 키로 실제 사용 가능한 flash 계열을 API에서 조회해 시도한다.
+    """
+    if _gemini_model_ok:
+        return [_gemini_model_ok]
+    cands = []
+    if os.getenv("GEMINI_OCR_MODEL"):
+        cands.append(os.getenv("GEMINI_OCR_MODEL"))
+    cands.append("gemini-flash-latest")  # 항상 최신 flash를 가리키는 별칭
+    try:
+        names = [m.name.split("/")[-1] for m in _get_gemini().models.list()]
+        flash = sorted(
+            (n for n in names if "flash" in n
+             and not any(x in n for x in ("lite", "live", "tts", "image", "audio"))),
+            reverse=True)  # 버전 문자열이 큰(새로운) 것부터
+        cands += [n for n in flash if n not in cands][:3]
+    except Exception as e:
+        print(f"[GeminiOCR] 모델 목록 조회 실패: {e}")
+    return cands
 
 
 def _gemini_read_burst(images: list[str]) -> list[str] | None:
@@ -121,21 +146,30 @@ def _gemini_read_burst(images: list[str]) -> list[str] | None:
         "- 의약품이 하나도 안 보이면 []\n"
         '형식 예: ["타이레놀정", "아모크라정"]'
     )
-    global _last_gemini_error
-    try:
-        resp = client.models.generate_content(
-            model=os.getenv("GEMINI_OCR_MODEL", "gemini-2.5-flash"),
-            contents=parts + [prompt],
-            config={"response_mime_type": "application/json"},
-        )
-        names = json.loads(resp.text)
-        if isinstance(names, list):
-            _last_gemini_error = None
-            return [str(n).strip() for n in names if str(n).strip()]
-        _last_gemini_error = f"unexpected response: {resp.text[:200]}"
-    except Exception as e:
-        _last_gemini_error = f"{type(e).__name__}: {e}"
-        print(f"[GeminiOCR] 실패 → EasyOCR 폴백: {_last_gemini_error}")
+    global _last_gemini_error, _gemini_model_ok
+    for model in _candidate_models():
+        try:
+            resp = client.models.generate_content(
+                model=model,
+                contents=parts + [prompt],
+                config={"response_mime_type": "application/json"},
+            )
+            names = json.loads(resp.text)
+            if isinstance(names, list):
+                _last_gemini_error = None
+                if _gemini_model_ok != model:
+                    _gemini_model_ok = model
+                    print(f"[GeminiOCR] 사용 모델: {model}")
+                    # 성분 매칭 폴백(GeminiDrugMatcher)도 같은 모델을 쓰도록 동기화
+                    if analyzer.llm_matcher is not None:
+                        analyzer.llm_matcher.model = model
+                return [str(n).strip() for n in names if str(n).strip()]
+            _last_gemini_error = f"unexpected response: {resp.text[:200]}"
+        except Exception as e:
+            _last_gemini_error = f"{type(e).__name__}: {e}"
+            print(f"[GeminiOCR] {model} 실패: {_last_gemini_error}")
+            if "404" not in str(e) and "NOT_FOUND" not in str(e):
+                break  # 모델 없음(404)만 다음 후보 시도, 그 외(쿼터 등)는 중단
     return None
 
 
