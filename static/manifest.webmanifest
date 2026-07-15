@@ -1,6 +1,6 @@
 {
-	"name": "알약 — 복약 관리",
-	"short_name": "알약",
+	"name": "Jellyday — 복약 관리",
+	"short_name": "Jellyday",
 	"description": "매일의 복약을 간단하게 기록하는 복약 관리 앱",
 	"lang": "ko",
 	"start_url": "/",

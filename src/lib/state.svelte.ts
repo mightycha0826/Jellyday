@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════
-   알약 pill-app — 전역 상태 (Svelte 5 runes)
+   Jellyday — 전역 상태 (Svelte 5 runes)
    낙관적 로컬 갱신 → Supabase write-through
    ═══════════════════════════════════════════════════════ */
 import type { Session } from '@supabase/supabase-js';
