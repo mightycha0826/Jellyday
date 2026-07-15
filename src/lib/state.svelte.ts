@@ -4,7 +4,7 @@
    ═══════════════════════════════════════════════════════ */
 import type { Session } from '@supabase/supabase-js';
 import { supabase, hasSupabase } from './supabase';
-import { todayKey } from './utils';
+import { todayKey, parseKey } from './utils';
 
 /* ── types ── */
 export interface Profile {
@@ -17,6 +17,7 @@ export interface Medication {
 	name: string;
 	dosage: string;
 	times: string[]; // morning | noon | evening | night
+	days_of_week: number[]; // 0(일)~6(토)
 	start_date: string;
 	end_date: string | null;
 	color: string;
@@ -251,9 +252,13 @@ export async function updateNick(nick: string) {
 
 /** 해당 날짜에 복용 중인 약 */
 export function medsOn(date: string): Medication[] {
+	const dow = parseKey(date).getDay();
 	return S.meds.filter(
 		(m) =>
-			m.times.length > 0 && m.start_date <= date && (!m.end_date || m.end_date >= date)
+			m.times.length > 0 &&
+			m.days_of_week.includes(dow) &&
+			m.start_date <= date &&
+			(!m.end_date || m.end_date >= date)
 	);
 }
 

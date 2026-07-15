@@ -56,12 +56,17 @@ create table if not exists public.medications (
   name text not null,
   dosage text not null default '',
   times text[] not null default '{}',        -- morning | noon | evening | night
+  days_of_week int[] not null default '{0,1,2,3,4,5,6}', -- 0(일)~6(토)
   start_date date not null default current_date,
   end_date date,                             -- null = 계속 복용
   color text not null default 'blue',
   memo text not null default '',
   created_at timestamptz not null default now()
 );
+-- 기존에 테이블이 이미 있던 경우를 위한 컬럼 추가
+alter table public.medications
+  add column if not exists days_of_week int[] not null default '{0,1,2,3,4,5,6}';
+
 alter table public.medications enable row level security;
 
 create policy "medications: own"

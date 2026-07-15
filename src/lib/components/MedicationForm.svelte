@@ -2,11 +2,12 @@
 	import BottomSheet from './BottomSheet.svelte';
 	import Icon from './Icon.svelte';
 	import { UI, saveMed, deleteMed, toast } from '$lib/state.svelte';
-	import { SLOTS, MED_COLORS, todayKey } from '$lib/utils';
+	import { SLOTS, MED_COLORS, DAY_NAMES_SHORT, todayKey } from '$lib/utils';
 
 	let name = $state('');
 	let dosage = $state('');
 	let times = $state<string[]>([]);
+	let daysOfWeek = $state<number[]>([]);
 	let startDate = $state(todayKey());
 	let endDate = $state('');
 	let color = $state('blue');
@@ -20,6 +21,7 @@
 		name = m?.name ?? UI.presetName;
 		dosage = m?.dosage ?? '';
 		times = m ? [...m.times] : ['morning'];
+		daysOfWeek = m ? [...m.days_of_week] : [0, 1, 2, 3, 4, 5, 6];
 		startDate = m?.start_date ?? todayKey();
 		endDate = m?.end_date ?? '';
 		color = m?.color ?? 'blue';
@@ -31,14 +33,21 @@
 		times = times.includes(id) ? times.filter((t) => t !== id) : [...times, id];
 	}
 
+	function toggleDay(d: number) {
+		daysOfWeek = daysOfWeek.includes(d)
+			? daysOfWeek.filter((x) => x !== d)
+			: [...daysOfWeek, d].sort();
+	}
+
 	async function submit() {
-		if (!name.trim() || times.length === 0 || saving) return;
+		if (!name.trim() || times.length === 0 || daysOfWeek.length === 0 || saving) return;
 		saving = true;
 		const ok = await saveMed(
 			{
 				name: name.trim(),
 				dosage: dosage.trim(),
 				times,
+				days_of_week: daysOfWeek,
 				start_date: startDate,
 				end_date: endDate || null,
 				color,
@@ -85,6 +94,23 @@
 			{/each}
 		</div>
 
+		<span class="lbl">복용 요일</span>
+		<div class="days" role="group" aria-label="복용 요일 선택">
+			{#each DAY_NAMES_SHORT as d, i (i)}
+				<button
+					type="button"
+					class="day"
+					class:on={daysOfWeek.includes(i)}
+					class:sun={i === 0}
+					class:sat={i === 6}
+					aria-pressed={daysOfWeek.includes(i)}
+					onclick={() => toggleDay(i)}
+				>
+					{d}
+				</button>
+			{/each}
+		</div>
+
 		<div class="row2">
 			<div>
 				<label class="lbl" for="med-start">시작일</label>
@@ -117,7 +143,12 @@
 		<label class="lbl" for="med-memo">메모 <em>(선택)</em></label>
 		<input id="med-memo" class="field" placeholder="예) 식후 30분" bind:value={memo} />
 
-		<button class="btn" style="margin-top: 20px" disabled={!name.trim() || times.length === 0 || saving} onclick={submit}>
+		<button
+			class="btn"
+			style="margin-top: 20px"
+			disabled={!name.trim() || times.length === 0 || daysOfWeek.length === 0 || saving}
+			onclick={submit}
+		>
 			{UI.editingMed ? '수정 완료' : '추가하기'}
 		</button>
 		{#if UI.editingMed}
@@ -165,6 +196,32 @@
 		transition: all 0.15s;
 	}
 	.slot.on {
+		background: var(--blue-soft);
+		color: var(--blue);
+		border-color: var(--blue);
+	}
+	.days {
+		display: grid;
+		grid-template-columns: repeat(7, 1fr);
+		gap: 6px;
+	}
+	.day {
+		height: 40px;
+		border-radius: var(--r-chip);
+		background: var(--fill);
+		color: var(--text-2);
+		font-size: 13px;
+		font-weight: 600;
+		border: 1.5px solid transparent;
+		transition: all 0.15s;
+	}
+	.day.sun {
+		color: var(--red);
+	}
+	.day.sat {
+		color: var(--blue);
+	}
+	.day.on {
 		background: var(--blue-soft);
 		color: var(--blue);
 		border-color: var(--blue);

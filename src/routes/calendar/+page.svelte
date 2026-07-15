@@ -107,7 +107,7 @@
 	<section class="rise" style="animation-delay: 0.1s; margin-top: 24px">
 		<h3 class="sec">복약 기록</h3>
 		{#if items.length === 0}
-			<div class="card none">이 날짜에 복용할 약이 없어요</div>
+			<div class="card day-empty">이 날짜에 복용할 약이 없어요</div>
 		{:else}
 			<div class="card list">
 				{#each items as it (it.med.id + it.slot)}
@@ -260,7 +260,7 @@
 		font-weight: 700;
 		margin: 0 4px 8px;
 	}
-	.none {
+	.day-empty {
 		color: var(--text-3);
 		font-size: 14px;
 		text-align: center;

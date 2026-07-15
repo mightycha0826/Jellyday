@@ -253,6 +253,7 @@
 				name: raw,
 				dosage: '',
 				times: slots,
+				days_of_week: [0, 1, 2, 3, 4, 5, 6],
 				start_date: startDate,
 				end_date: endDate,
 				color: MED_COLORS[i % MED_COLORS.length].id,
