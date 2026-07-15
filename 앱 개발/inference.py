@@ -29,18 +29,36 @@ except ImportError:
 
 
 class DrugNameNormalizer:
-    """OCR 약물명 정규화 (브랜드명/처방전 텍스트용)."""
-    _FORM = re.compile(
-        r'(정|캡슐|캡|주사|시럽|연고|크림|패치|좌약|과립|액|앰플'
-        r'|tablet|capsule|injection|mg|ml|mcg|%)\b', re.I)
-    _NUM = re.compile(r'\d+[\.\d]*')
+    """
+    OCR 약물명 정규화 (브랜드명/처방전 텍스트용).
+
+    한글·숫자는 파이썬 정규식에서 전부 "단어 문자"로 취급되어 서로 사이에
+    \\b(단어 경계)가 생기지 않는다. 그래서 "케이캡정50mg"처럼 띄어쓰기 없이
+    붙어 있으면(약봉투 인쇄물에 흔한 형태) 예전처럼 "정\\b"만 봐서는 "정" 뒤에
+    바로 숫자가 와서 경계가 없다는 이유로 아예 못 지웠다.
+
+    그렇다고 매칭될 때까지 무한정 반복 치환하면 다른 문제가 생긴다 — 예를
+    들어 "케이캡정50mg"에서 "정50mg"을 지우고 나면 "케이캡"이 남는데, "캡"도
+    (캡슐의 줄임말로) 제형 목록에 있어서 다음 라운드에 "캡"까지 지워져
+    "케이"라는 잘못된 결과가 나온다("캡"이 실제로는 상품명의 일부).
+
+    그래서 "제형 단어 → 숫자 → 단위 단어" 조합을 문자열 끝에 고정해
+    한 번만(반복 없이) 통째로 지운다. 이러면 dosage 꼬리에 붙은 "정"만
+    지워지고, 그 앞쪽에서 우연히 제형 단어와 겹치는 "케이캡"의 "캡" 같은
+    브랜드명 글자는 건드리지 않는다.
+    """
+    _TAIL = re.compile(
+        r'(정|캡슐|캡|주사|시럽|연고|크림|패치|좌약|과립|앰플'
+        r'|tablet|tab|capsule|cap|injection|inj)?'
+        r'\s*\d*[\.\d]*\s*'
+        r'(mg|mcg|ml|%|밀리그램|밀리그람|마이크로그램|마이크로그람'
+        r'|킬로그램|킬로그람|그램|그람|밀리리터|리터|액)?$', re.I)
 
     def normalize(self, raw: str) -> str:
         if not isinstance(raw, str):
             return ''
         t = unicodedata.normalize('NFC', raw.strip())
-        t = self._FORM.sub('', t)
-        t = self._NUM.sub('', t)
+        t = self._TAIL.sub('', t)
         return re.sub(r'\s+', ' ', t).strip().lower()
 
     def normalize_list(self, raws: List[str]) -> List[str]:
