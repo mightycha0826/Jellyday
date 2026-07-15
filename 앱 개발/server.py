@@ -77,6 +77,81 @@ def analyze(req: AnalyzeRequest):
 
 
 # ── OCR (사진 → 약품명) ────────────────────────────────────
+# GEMINI_API_KEY가 있으면 Gemini 비전으로 사진에서 약품명을 직접 읽는다
+# (한글 약봉투 인식률이 EasyOCR보다 훨씬 높음). 없거나 실패하면 EasyOCR 폴백.
+_gemini_client = None
+
+
+def _get_gemini():
+    global _gemini_client
+    if _gemini_client is None and GEMINI_API_KEY:
+        from google import genai  # pip install google-genai
+
+        _gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+    return _gemini_client
+
+
+def _gemini_read_burst(images: list[str]) -> list[str] | None:
+    """
+    같은 약(봉투)을 찍은 사진 여러 장 → Gemini 비전 → 약품명 목록.
+    실패(키 없음/네트워크/파싱)하면 None을 반환해 EasyOCR 폴백을 태운다.
+    """
+    client = _get_gemini()
+    if client is None:
+        return None
+
+    import base64
+    import json
+
+    from google.genai import types
+
+    parts = []
+    for img in images[:4]:  # 버스트당 최대 4장 — 비용/지연 제한 (사진끼리 내용은 같음)
+        b64 = img.split(",", 1)[-1]  # data URL 접두어 제거
+        parts.append(types.Part.from_bytes(
+            data=base64.b64decode(b64), mime_type="image/jpeg"))
+
+    prompt = (
+        "이 사진들은 한국 약국의 약봉투(또는 처방전/약 포장)를 같은 대상으로 여러 번 찍은 것입니다. "
+        "사진에 보이는 모든 의약품 이름(제품명)을 JSON 문자열 배열로 반환하세요.\n"
+        "- 제품명만: 용량(mg 등)·개수·복용횟수·약물코드·날짜·병원/약국명·환자명은 제외\n"
+        "- 같은 약이 여러 사진에 보여도 한 번만\n"
+        "- 글자가 일부 흐려도 문맥상 확실하면 올바른 제품명으로 보정해서 적기\n"
+        "- 의약품이 하나도 안 보이면 []\n"
+        '형식 예: ["타이레놀정", "아모크라정"]'
+    )
+    try:
+        resp = client.models.generate_content(
+            model=os.getenv("GEMINI_OCR_MODEL", "gemini-2.5-flash"),
+            contents=parts + [prompt],
+            config={"response_mime_type": "application/json"},
+        )
+        names = json.loads(resp.text)
+        if isinstance(names, list):
+            return [str(n).strip() for n in names if str(n).strip()]
+    except Exception as e:
+        print(f"[GeminiOCR] 실패 → EasyOCR 폴백: {e}")
+    return None
+
+
+def _read_burst(images: list[str]) -> list[str]:
+    """버스트 1개 → 약품명 목록. Gemini 비전 우선, 실패 시 EasyOCR 다수결."""
+    names = _gemini_read_burst(images)
+    if names is not None:
+        return names
+    return _vote_burst(images)
+
+
+def read_items(bursts: list[list[str]]) -> list[list[str]]:
+    """약별 버스트 목록을 병렬로 읽는다 (Gemini 호출은 I/O 대기라 스레드로 겹치면 빠름)."""
+    if len(bursts) <= 1:
+        return [_read_burst(b) for b in bursts]
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=min(4, len(bursts))) as ex:
+        return list(ex.map(_read_burst, bursts))
+
+
 # EasyOCR은 무겁고 첫 실행 시 모델을 내려받으므로 lazy 로딩.
 _reader = None
 
@@ -226,9 +301,9 @@ def _vote_burst(images: list[str]) -> list[str]:
 
 @app.post("/analyze-image")
 def analyze_image(req: ImageRequest):
-    """약봉투 사진 1장(base64) → OCR → analyze()."""
+    """약봉투 사진 1장(base64) → OCR(Gemini 비전 우선) → analyze()."""
     try:
-        lines = _ocr(req.image)
+        lines = _read_burst([req.image])
     except ImportError:
         return _ocr_unavailable()
     result = analyzer.analyze(lines)
@@ -239,19 +314,17 @@ def analyze_image(req: ImageRequest):
 @app.post("/analyze-images")
 def analyze_images(req: MultiRequest):
     """
-    약별 버스트 목록 → 약마다 다수결 OCR → 모든 약품명 합쳐 analyze().
-    앱의 '여러 번 찍기' 플로우가 부르는 엔드포인트.
+    약별 버스트 목록 → 약마다 이름 추출(Gemini 비전 우선, EasyOCR 폴백)
+    → 모든 약품명 합쳐 analyze(). 앱의 '여러 번 찍기' 플로우가 부르는 엔드포인트.
     """
-    try:
-        _get_reader()
-    except ImportError:
-        return _ocr_unavailable()
+    if _get_gemini() is None:
+        try:
+            _get_reader()  # Gemini 없으면 EasyOCR이 필수
+        except ImportError:
+            return _ocr_unavailable()
 
-    per_item, all_names = [], []
-    for item in req.items:
-        names = _vote_burst(item.images)
-        per_item.append(names)
-        all_names.extend(names)
+    per_item = read_items([item.images for item in req.items])
+    all_names = [n for names in per_item for n in names]
 
     result = analyzer.analyze(all_names)
     result["per_item_names"] = per_item  # 약별 인식 결과(디버그/확인용)

@@ -25,6 +25,9 @@ Gradio REST 2-step 호출:
 
 ## 환경변수
 - `DRUG_DB` (기본 `drug_data.db`), `DDI_MODEL` (기본 `ddi_model.pt`)
-- `GEMINI_API_KEY` — 설정하면 DB·fuzzy로도 식별 못한 약을 Gemini로 한 번 더 시도한다
-  (등록된 성분 목록 중에서만 고르게 해 환각을 제한). HF Spaces라면 Settings > Repository secrets에 등록.
-  없으면 기존 동작(DB + fuzzy 매칭)만 그대로 동작한다.
+- `GEMINI_API_KEY` — 설정하면 (1) 사진에서 약품명을 Gemini 비전으로 직접 읽고
+  (한글 인식률이 EasyOCR보다 훨씬 높음, 실패 시 EasyOCR 폴백),
+  (2) DB·fuzzy로도 식별 못한 약을 Gemini로 한 번 더 성분 매칭한다
+  (등록된 성분 목록 중에서만 고르게 해 환각을 제한).
+  HF Spaces라면 Settings > Repository secrets에 등록. 없으면 기존 동작(EasyOCR + DB/fuzzy)으로 동작.
+- `GEMINI_OCR_MODEL` — 비전 OCR에 쓸 모델 (기본 `gemini-2.5-flash`)

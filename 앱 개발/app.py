@@ -15,8 +15,8 @@ items = [{"images": ["dataURL", ...]}, ...] (약별 버스트 목록)
 import gradio as gr
 import spaces
 
-# server.py 의 로직 재사용: 로드된 파이프라인 + 버스트 다수결 OCR + OCR 리더
-from server import analyzer, _vote_burst, _get_reader
+# server.py 의 로직 재사용: 로드된 파이프라인 + 이름 추출(Gemini 비전 우선) + OCR 리더
+from server import analyzer, read_items, _get_gemini, _get_reader
 
 
 # ZeroGPU 시작 요건(@spaces.GPU 함수가 1개 이상 "존재")만 충족하는 최소 함수.
@@ -29,22 +29,20 @@ def _gpu_probe():
 
 
 def analyze_images_fn(items):
-    """약별 버스트 목록 → 약마다 다수결 OCR → 전체 합쳐 analyze()."""
-    try:
-        _get_reader()  # EasyOCR 준비 (미설치면 ImportError)
-    except ImportError:
-        return {
-            "error": "OCR 미설치 — requirements 에 easyocr 필요",
-            "identified": {}, "unidentified": [],
-            "interactions": [], "drug_risk_score": 0.0, "per_item_names": [],
-        }
+    """약별 버스트 목록 → 약마다 이름 추출(Gemini 비전 우선, EasyOCR 폴백) → 전체 합쳐 analyze()."""
+    if _get_gemini() is None:
+        try:
+            _get_reader()  # Gemini 없으면 EasyOCR이 필수 (미설치면 ImportError)
+        except ImportError:
+            return {
+                "error": "OCR 미설치 — requirements 에 easyocr 필요",
+                "identified": {}, "unidentified": [],
+                "interactions": [], "drug_risk_score": 0.0, "per_item_names": [],
+            }
 
     try:
-        per_item, all_names = [], []
-        for item in (items or []):
-            names = _vote_burst(item.get("images", []))
-            per_item.append(names)
-            all_names.extend(names)
+        per_item = read_items([item.get("images", []) for item in (items or [])])
+        all_names = [n for names in per_item for n in names]
         result = analyzer.analyze(all_names)
         result["per_item_names"] = per_item  # 약별 인식 결과(디버그/확인용)
         return result
