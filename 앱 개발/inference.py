@@ -315,9 +315,19 @@ class DrugAnalyzer:
                 identified[raw] = self.get_info(ingredient)
             else:
                 candidates = self.fuzzy.find_candidates(norm)
+                best = None
+                if candidates:
+                    if candidates[0]['match_score'] >= 0.90:
+                        best = candidates[0]
+                    elif (len(candidates) >= 2
+                          and candidates[0]['match_score'] >= 0.80
+                          and len({c['ingredient'] for c in candidates}) == 1):
+                        # 후보 전원이 같은 성분(제조사 접두어만 다른 alias들)이면
+                        # 0.90 미만이어도 채택 — 예: '록소프로펜나트륨' vs
+                        # '삼성/안국록소프로펜나트륨' (0.89)
+                        best = candidates[0]
                 auto_matched = None
-                if candidates and candidates[0]['match_score'] >= 0.90:
-                    best = candidates[0]
+                if best is not None:
                     info = self.get_info(best['ingredient'])
                     info['fuzzy_matched'] = True
                     info['match_score'] = best['match_score']
