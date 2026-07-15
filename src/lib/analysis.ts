@@ -46,6 +46,8 @@ export interface AnalyzeResult {
 	interactions: Interaction[];
 	drug_risk_score: number; // 0~1
 	ocr_lines?: string[];
+	/** 진단용: Gemini 비전 OCR 사용 가능 여부. 'ok' | 'no-key' | 'init-error: ...' | 'call-error: ...' */
+	gemini?: string;
 }
 
 const API = (env.PUBLIC_ANALYZE_API ?? '').replace(/\/$/, '');
@@ -128,7 +130,11 @@ export async function analyzeImages(bursts: string[][]): Promise<AnalyzeResult> 
 		}
 	}
 	if (!payload) throw new Error('analyze: empty response');
-	return payload[0] as AnalyzeResult;
+	const result = payload[0] as AnalyzeResult;
+	if (result.gemini && result.gemini !== 'ok') {
+		console.warn('[analyzeImages] Gemini OCR 미사용 (EasyOCR로 폴백됨):', result.gemini);
+	}
+	return result;
 }
 
 /** 서버 연결 전 데모용 목업 (실제 응답과 같은 형태) */
