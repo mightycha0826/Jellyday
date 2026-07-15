@@ -1,0 +1,17 @@
+# JellyDay DDI 추론 API 실행에 필요한 패키지
+# torch는 CPU 버전으로 충분 (모델이 작음). 설치가 느리면:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch
+gradio
+fastapi
+uvicorn[standard]
+pydantic
+
+# 선택: 설치하면 fuzzy 약품명 매칭이 ~100배 빨라짐 (없어도 동작)
+rapidfuzz
+
+# OCR (사진 → 약품명). /analyze-image 엔드포인트에 필요.
+# 첫 실행 시 한글/영문 인식 모델을 자동으로 내려받는다.
+easyocr
+pillow
+numpy

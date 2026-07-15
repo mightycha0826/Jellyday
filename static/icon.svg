@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><title>알약</title>
+<rect width="48" height="48" rx="11" fill="#ffffff"/>
+<g transform="translate(24 24) scale(0.86) translate(-24 -24)">
+<g transform="rotate(45 24 24)">
+<path d="M15 24 V14 a9 9 0 0 1 18 0 V24 Z" fill="#4EC3F7"/>
+<path d="M15 24 V34 a9 9 0 0 0 18 0 V24 Z" fill="#DDE6EC"/>
+<path d="M20.5 12.5 q3.5 -3 7 0" stroke="#fff" stroke-width="2.6" fill="none" stroke-linecap="round"/>
+</g>
+</g>
+</svg>
