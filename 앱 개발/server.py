@@ -64,7 +64,7 @@ class MultiRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"ok": True}
+    return {"ok": True, "gemini": gemini_status()}
 
 
 @app.post("/analyze")
@@ -140,6 +140,16 @@ def _read_burst(images: list[str]) -> list[str]:
     if names is not None:
         return names
     return _vote_burst(images)
+
+
+def gemini_status() -> str:
+    """진단용: Gemini 사용 가능 여부. 'ok' | 'no-key' | 'error: ...'"""
+    if not GEMINI_API_KEY:
+        return "no-key"
+    try:
+        return "ok" if _get_gemini() is not None else "no-key"
+    except Exception as e:
+        return f"error: {type(e).__name__}: {e}"
 
 
 def read_items(bursts: list[list[str]]) -> list[list[str]]:
@@ -328,6 +338,7 @@ def analyze_images(req: MultiRequest):
 
     result = analyzer.analyze(all_names)
     result["per_item_names"] = per_item  # 약별 인식 결과(디버그/확인용)
+    result["gemini"] = gemini_status()   # 진단용: 키 미설정/오류를 응답에서 바로 확인
     return result
 
 
