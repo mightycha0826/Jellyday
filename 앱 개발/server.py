@@ -80,6 +80,7 @@ def analyze(req: AnalyzeRequest):
 # GEMINI_API_KEY가 있으면 Gemini 비전으로 사진에서 약품명을 직접 읽는다
 # (한글 약봉투 인식률이 EasyOCR보다 훨씬 높음). 없거나 실패하면 EasyOCR 폴백.
 _gemini_client = None
+_last_gemini_error: str | None = None  # 마지막 Gemini 호출 실패 원인 (진단용)
 
 
 def _get_gemini():
@@ -120,6 +121,7 @@ def _gemini_read_burst(images: list[str]) -> list[str] | None:
         "- 의약품이 하나도 안 보이면 []\n"
         '형식 예: ["타이레놀정", "아모크라정"]'
     )
+    global _last_gemini_error
     try:
         resp = client.models.generate_content(
             model=os.getenv("GEMINI_OCR_MODEL", "gemini-2.5-flash"),
@@ -128,9 +130,12 @@ def _gemini_read_burst(images: list[str]) -> list[str] | None:
         )
         names = json.loads(resp.text)
         if isinstance(names, list):
+            _last_gemini_error = None
             return [str(n).strip() for n in names if str(n).strip()]
+        _last_gemini_error = f"unexpected response: {resp.text[:200]}"
     except Exception as e:
-        print(f"[GeminiOCR] 실패 → EasyOCR 폴백: {e}")
+        _last_gemini_error = f"{type(e).__name__}: {e}"
+        print(f"[GeminiOCR] 실패 → EasyOCR 폴백: {_last_gemini_error}")
     return None
 
 
@@ -143,13 +148,17 @@ def _read_burst(images: list[str]) -> list[str]:
 
 
 def gemini_status() -> str:
-    """진단용: Gemini 사용 가능 여부. 'ok' | 'no-key' | 'error: ...'"""
+    """진단용: Gemini 사용 가능 여부. 'ok' | 'no-key' | 'init-error/call-error: ...'"""
     if not GEMINI_API_KEY:
         return "no-key"
     try:
-        return "ok" if _get_gemini() is not None else "no-key"
+        if _get_gemini() is None:
+            return "no-key"
     except Exception as e:
-        return f"error: {type(e).__name__}: {e}"
+        return f"init-error: {type(e).__name__}: {e}"
+    if _last_gemini_error:
+        return f"call-error: {_last_gemini_error}"
+    return "ok"
 
 
 def read_items(bursts: list[list[str]]) -> list[list[str]]:
